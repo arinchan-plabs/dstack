@@ -108,7 +108,8 @@ def create_security_group(
                 "FromPort": 22,
                 "ToPort": 22,
                 "IpProtocol": "tcp",
-                "IpRanges": [{"CidrIp": cidr} for cidr in ssh_ingress_cidrs],
+                # EC2 rejects an IpPermission that repeats a range
+                "IpRanges": [{"CidrIp": cidr} for cidr in dict.fromkeys(ssh_ingress_cidrs)],
             },
         )
     _add_ingress_security_group_rule_if_missing(
@@ -522,17 +523,11 @@ def _is_subset(subset, superset) -> bool:
     if isinstance(subset, dict) and isinstance(superset, dict):
         return all(k in superset and _is_subset(v, superset[k]) for k, v in subset.items())
     if isinstance(subset, list) and isinstance(superset, list):
-        # AWS does not preserve the order of IpRanges, so a positional comparison would
-        # miss an existing rule and re-authorize it, which fails as InvalidPermission.Duplicate.
-        if len(subset) != len(superset):
-            return False
-        remaining = list(superset)
-        for v1 in subset:
-            match = next((i for i, v2 in enumerate(remaining) if _is_subset(v1, v2)), None)
-            if match is None:
-                return False
-            remaining.pop(match)
-        return True
+        # Containment, not equality. AWS aggregates every CIDR for one port/protocol into a
+        # single IpPermission and returns them in arbitrary order, so the rule is already in
+        # effect once each element it names is present. Requiring equal lengths here would
+        # re-authorize an already-present rule, which raises InvalidPermission.Duplicate.
+        return all(any(_is_subset(v1, v2) for v2 in superset) for v1 in subset)
     return subset == superset
 
 

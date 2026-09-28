@@ -3,7 +3,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from dstack._internal.core.backends.aws.models import AWSOSImage, AWSOSImageConfig
+from dstack._internal.core.backends.aws.models import (
+    AWSConfig,
+    AWSDefaultCreds,
+    AWSOSImage,
+    AWSOSImageConfig,
+)
 from dstack._internal.core.backends.aws.resources import (
     _create_network_interfaces_struct,
     _is_valid_tag_key,
@@ -459,7 +464,7 @@ class TestCreateSecurityGroup:
                     rules.append(permission)
         return rules
 
-    def test_defaults_to_world_open_ssh(self, ec2_client_mock: Mock):
+    def test_opens_ssh_to_the_world_when_asked(self, ec2_client_mock: Mock):
         create_security_group(
             ec2_client=ec2_client_mock,
             project_id="main",
@@ -525,6 +530,53 @@ class TestCreateSecurityGroup:
         )
         assert self._ssh_rules(ec2_client_mock) == []
 
+    def test_does_not_readd_ssh_rule_when_existing_group_is_a_superset(
+        self, ec2_client_mock: Mock
+    ):
+        # The upgrade path: the group predates this option and still carries 0.0.0.0/0.
+        # AWS aggregates every CIDR for port 22 into one IpPermission.
+        ec2_client_mock.describe_security_groups.return_value = {
+            "SecurityGroups": [
+                {
+                    "GroupId": "sg-00000000000000000",
+                    "IpPermissions": [
+                        {
+                            "FromPort": 22,
+                            "ToPort": 22,
+                            "IpProtocol": "tcp",
+                            "IpRanges": [
+                                {"CidrIp": "0.0.0.0/0"},
+                                {"CidrIp": "10.0.0.0/16"},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        create_security_group(
+            ec2_client=ec2_client_mock,
+            project_id="pilot",
+            vpc_id="vpc-00000000000000000",
+            ssh_ingress_cidrs=["10.0.0.0/16"],
+        )
+        assert self._ssh_rules(ec2_client_mock) == []
+
+    def test_deduplicates_repeated_cidrs(self, ec2_client_mock: Mock):
+        create_security_group(
+            ec2_client=ec2_client_mock,
+            project_id="pilot",
+            vpc_id="vpc-00000000000000000",
+            ssh_ingress_cidrs=["10.0.0.0/16", "10.0.0.0/16"],
+        )
+        assert self._ssh_rules(ec2_client_mock) == [
+            {
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpProtocol": "tcp",
+                "IpRanges": [{"CidrIp": "10.0.0.0/16"}],
+            }
+        ]
+
 
 class TestRuleExists:
     def test_matches_ip_ranges_in_any_order(self):
@@ -544,3 +596,18 @@ class TestRuleExists:
         rule = {"IpProtocol": "tcp", "IpRanges": [{"CidrIp": "10.0.0.0/16"}]}
         existing = [{"IpProtocol": "tcp", "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}]
         assert not _rule_exists(rule, existing)
+
+
+class TestEffectiveSshIngressCidrs:
+    def _config(self, **kwargs) -> AWSConfig:
+        return AWSConfig(creds=AWSDefaultCreds(), **kwargs)
+
+    def test_unset_keeps_the_pre_existing_world_open_behaviour(self):
+        assert self._config().effective_ssh_ingress_cidrs == ["0.0.0.0/0"]
+
+    def test_explicit_list_is_used_as_is(self):
+        config = self._config(ssh_ingress_cidrs=["10.0.0.0/16"])
+        assert config.effective_ssh_ingress_cidrs == ["10.0.0.0/16"]
+
+    def test_empty_list_is_distinct_from_unset(self):
+        assert self._config(ssh_ingress_cidrs=[]).effective_ssh_ingress_cidrs == []
