@@ -1176,6 +1176,7 @@ class AWSCompute(
             ec2_client=ec2_client,
             project_id=project_id,
             vpc_id=vpc_id,
+            ssh_ingress_cidrs=self.config.effective_ssh_ingress_cidrs,
         )
 
     def _get_image_id_and_username_cache_key(

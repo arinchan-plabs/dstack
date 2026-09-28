@@ -60,6 +60,7 @@ def create_security_group(
     ec2_client: botocore.client.BaseClient,
     project_id: str,
     vpc_id: Optional[str],
+    ssh_ingress_cidrs: List[str],
 ) -> str:
     security_group_name = "dstack_security_group_" + project_id.replace("-", "_").lower()
     describe_security_groups_filters = [
@@ -98,17 +99,19 @@ def create_security_group(
         )
     security_group_id = security_group["GroupId"]
 
-    _add_ingress_security_group_rule_if_missing(
-        ec2_client=ec2_client,
-        security_group=security_group,
-        security_group_id=security_group_id,
-        rule={
-            "FromPort": 22,
-            "ToPort": 22,
-            "IpProtocol": "tcp",
-            "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
-        },
-    )
+    if ssh_ingress_cidrs:
+        _add_ingress_security_group_rule_if_missing(
+            ec2_client=ec2_client,
+            security_group=security_group,
+            security_group_id=security_group_id,
+            rule={
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpProtocol": "tcp",
+                # EC2 rejects an IpPermission that repeats a range
+                "IpRanges": [{"CidrIp": cidr} for cidr in dict.fromkeys(ssh_ingress_cidrs)],
+            },
+        )
     _add_ingress_security_group_rule_if_missing(
         ec2_client=ec2_client,
         security_group=security_group,
@@ -520,9 +523,11 @@ def _is_subset(subset, superset) -> bool:
     if isinstance(subset, dict) and isinstance(superset, dict):
         return all(k in superset and _is_subset(v, superset[k]) for k, v in subset.items())
     if isinstance(subset, list) and isinstance(superset, list):
-        return len(subset) == len(superset) and all(
-            _is_subset(v1, v2) for v1, v2 in zip(subset, superset)
-        )
+        # Containment, not equality. AWS aggregates every CIDR for one port/protocol into a
+        # single IpPermission and returns them in arbitrary order, so the rule is already in
+        # effect once each element it names is present. Requiring equal lengths here would
+        # re-authorize an already-present rule, which raises InvalidPermission.Duplicate.
+        return all(any(_is_subset(v1, v2) for v2 in superset) for v1 in subset)
     return subset == superset
 
 
