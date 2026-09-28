@@ -86,6 +86,17 @@ class AWSBackendConfig(CoreModel):
             )
         ),
     ] = None
+    ssh_ingress_cidrs: Annotated[
+        Optional[List[str]],
+        Field(
+            description=(
+                "The CIDRs allowed to reach port 22 on instances."
+                " Set to the VPC CIDR when `public_ips: false`, since instances are then"
+                " only reachable privately. An empty list adds no SSH ingress rule at all."
+                ' Defaults to `["0.0.0.0/0"]`'
+            )
+        ),
+    ] = None
     iam_instance_profile: Annotated[
         Optional[str],
         Field(
@@ -127,6 +138,12 @@ class AWSConfig(AWSStoredConfig):
         if self.public_ips is not None:
             return self.public_ips
         return True
+
+    @property
+    def effective_ssh_ingress_cidrs(self) -> List[str]:
+        if self.ssh_ingress_cidrs is not None:
+            return self.ssh_ingress_cidrs
+        return ["0.0.0.0/0"]
 
     @property
     def use_default_vpcs(self) -> bool:
